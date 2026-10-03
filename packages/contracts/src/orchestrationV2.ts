@@ -2458,6 +2458,11 @@ export const OrchestrationV2Command = Schema.Union([
         metadata: Schema.optional(OrchestrationV2ProviderThreadNativeMetadata),
       }),
     ),
+    /**
+     * Nests the new thread under an existing thread of the same project as a
+     * subagent: hidden from the sidebar and listed in the parent's lineage.
+     */
+    parentThreadId: Schema.optional(ThreadId),
   }),
   Schema.Struct({
     type: Schema.Literal("thread.archive"),
@@ -2986,6 +2991,8 @@ export const OrchestrationV2ThreadLaunchInput = Schema.Struct({
   creationSource: Schema.optional(OrchestrationV2CreationSource),
   threadId: Schema.optional(ThreadId),
   reuseExistingThread: Schema.optional(Schema.Boolean),
+  /** See `parentThreadId` on `thread.create`. */
+  parentThreadId: Schema.optional(ThreadId),
   projectId: ProjectId,
   title: TrimmedNonEmptyString,
   generateTitle: Schema.optional(Schema.Boolean),

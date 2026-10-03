@@ -2094,6 +2094,54 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       { concurrency: 1, discard: true },
     );
 
+  /**
+   * Lineage for a created thread. With `parentThreadId` the thread is nested
+   * as a subagent of a live thread in the same project and shares its root.
+   * Lineage is immutable, so the parent is read without its dispatch lock.
+   */
+  const threadCreateLineage = Effect.fn("orchestrationV2.dispatch.threadCreateLineage")(function* (
+    command: Extract<OrchestrationV2Command, { readonly type: "thread.create" }>,
+  ) {
+    const parentThreadId = command.parentThreadId;
+    if (parentThreadId === undefined) {
+      return {
+        parentThreadId: null,
+        relationshipToParent: null,
+        rootThreadId: command.threadId,
+      } satisfies OrchestrationV2AppThread["lineage"];
+    }
+    const reject = (cause: string) =>
+      new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause,
+      });
+    if (parentThreadId === command.threadId) {
+      return yield* reject(`Thread ${command.threadId} cannot be its own parent.`);
+    }
+    const parent = yield* projectionStore.getThread(parentThreadId).pipe(
+      Effect.asSome,
+      Effect.catchTag("ProjectionStoreThreadNotFoundError", () => Effect.succeedNone),
+      Effect.mapError(
+        (cause) => new OrchestratorProjectionError({ threadId: parentThreadId, cause }),
+      ),
+    );
+    if (Option.isNone(parent)) {
+      return yield* reject(`Parent thread ${parentThreadId} does not exist.`);
+    }
+    if (parent.value.deletedAt !== null) {
+      return yield* reject(`Parent thread ${parentThreadId} is deleted.`);
+    }
+    if (parent.value.projectId !== command.projectId) {
+      return yield* reject(`Parent thread ${parentThreadId} belongs to another project.`);
+    }
+    return {
+      parentThreadId,
+      relationshipToParent: "subagent",
+      rootThreadId: parent.value.lineage.rootThreadId,
+    } satisfies OrchestrationV2AppThread["lineage"];
+  });
+
   const dispatchThreadCreate = Effect.fn("orchestrationV2.dispatch.threadCreate")(function* (
     command: Extract<OrchestrationV2Command, { readonly type: "thread.create" }>,
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
@@ -2105,6 +2153,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       "orchestration_v2.driver": command.modelSelection.instanceId,
     });
 
+    const lineage = yield* threadCreateLineage(command);
     const now = yield* DateTime.now;
     const emitEvent = emit(events, command);
     const thread: OrchestrationV2AppThread = {
@@ -2120,11 +2169,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       branch: command.branch,
       worktreePath: command.worktreePath,
       activeProviderThreadId: null,
-      lineage: {
-        parentThreadId: null,
-        relationshipToParent: null,
-        rootThreadId: command.threadId,
-      },
+      lineage,
+      // Stays null even under a parent: the delegated-task result paths key on
+      // a node origin, and this thread was not spawned by a parent's run.
       forkedFrom: null,
       createdAt: now,
       updatedAt: now,

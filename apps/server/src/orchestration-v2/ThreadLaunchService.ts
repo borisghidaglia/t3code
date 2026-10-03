@@ -70,6 +70,7 @@ export interface ThreadLaunchInput {
   readonly commandId: CommandId;
   readonly threadId?: ThreadId;
   readonly reuseExistingThread?: boolean;
+  readonly parentThreadId?: ThreadId;
   readonly projectId: ProjectId;
   readonly title: string;
   readonly generateTitle?: boolean;
@@ -632,6 +633,12 @@ const make = Effect.gen(function* () {
           "update-thread",
         )("Reusing an existing thread requires a thread id.");
       }
+      if (input.reuseExistingThread === true && input.parentThreadId !== undefined) {
+        return yield* mapError(
+          input,
+          "update-thread",
+        )("A reused thread keeps its lineage and cannot take a parent thread.");
+      }
 
       const launchReceipt = yield* readReceipt(input, input.commandId);
       return yield* Effect.gen(function* () {
@@ -716,6 +723,9 @@ const make = Effect.gen(function* () {
                 ...(input.importedNativeThread === undefined
                   ? {}
                   : { importedNativeThread: input.importedNativeThread }),
+                ...(input.parentThreadId === undefined
+                  ? {}
+                  : { parentThreadId: input.parentThreadId }),
                 createdBy: input.createdBy,
                 creationSource: input.creationSource,
               });

@@ -52,6 +52,7 @@ import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as IdAllocator from "./IdAllocator.ts";
+import * as Orchestrator from "./Orchestrator.ts";
 import type { ProviderAdapterV2Shape } from "./ProviderAdapter.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ThreadLaunch from "./ThreadLaunchService.ts";
@@ -1734,6 +1735,141 @@ it.effect("creates a strong provider-thread mapping for an imported native sessi
       launched.projection.thread.activeProviderThreadId,
       launched.projection.providerThreads[0]?.id,
     );
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect("nests a launched thread under a parent thread as a subagent of its root", () => {
+  const harness = makeHarness();
+  return Effect.gen(function* () {
+    const launches = yield* ThreadLaunch.ThreadLaunchService;
+    const workspace = {
+      type: "existing_worktree" as const,
+      worktreePath: "/repo-worktrees/shared",
+    };
+    const root = yield* launches.launch(
+      launchInput({
+        command: "command:launch:lineage-root",
+        thread: "thread:lineage-root",
+        workspace,
+      }),
+    );
+    assert.deepEqual(root.projection.thread.lineage, {
+      parentThreadId: null,
+      relationshipToParent: null,
+      rootThreadId: root.threadId,
+    });
+
+    const child = yield* launches.launch({
+      ...launchInput({
+        command: "command:launch:lineage-child",
+        thread: "thread:lineage-child",
+        message: "Cook",
+        workspace,
+      }),
+      parentThreadId: root.threadId,
+    });
+    assert.deepEqual(child.projection.thread.lineage, {
+      parentThreadId: root.threadId,
+      relationshipToParent: "subagent",
+      rootThreadId: root.threadId,
+    });
+    // A node origin or a provider source would route the child through the
+    // delegated-task result paths or make its composer read-only.
+    assert.isNull(child.projection.thread.forkedFrom);
+    assert.equal(child.projection.thread.creationSource, "web");
+
+    const grandchild = yield* launches.launch({
+      ...launchInput({
+        command: "command:launch:lineage-grandchild",
+        thread: "thread:lineage-grandchild",
+        workspace,
+      }),
+      parentThreadId: child.threadId,
+    });
+    assert.deepEqual(grandchild.projection.thread.lineage, {
+      parentThreadId: child.threadId,
+      relationshipToParent: "subagent",
+      rootThreadId: root.threadId,
+    });
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect("rejects a parent thread that is missing, deleted, or in another project", () => {
+  const harness = makeHarness();
+  return Effect.gen(function* () {
+    const launches = yield* ThreadLaunch.ThreadLaunchService;
+    const threads = yield* ThreadManagement.ThreadManagementService;
+    const foreign = yield* launches.launch({
+      ...launchInput({ command: "command:launch:foreign-parent", thread: "thread:foreign-parent" }),
+      projectId: otherProjectId,
+    });
+    const deleted = yield* launches.launch(
+      launchInput({ command: "command:launch:deleted-parent", thread: "thread:deleted-parent" }),
+    );
+    yield* threads.dispatch({
+      type: "thread.delete",
+      commandId: CommandId.make("command:launch:deleted-parent:delete"),
+      threadId: deleted.threadId,
+    });
+
+    const cases = [
+      {
+        name: "missing",
+        parentThreadId: ThreadId.make("thread:missing-parent"),
+        detail: "Parent thread thread:missing-parent does not exist.",
+      },
+      {
+        name: "deleted",
+        parentThreadId: deleted.threadId,
+        detail: `Parent thread ${deleted.threadId} is deleted.`,
+      },
+      {
+        name: "foreign",
+        parentThreadId: foreign.threadId,
+        detail: `Parent thread ${foreign.threadId} belongs to another project.`,
+      },
+      {
+        name: "self",
+        parentThreadId: ThreadId.make("thread:orphan-self"),
+        detail: "Thread thread:orphan-self cannot be its own parent.",
+      },
+    ];
+    for (const rejected of cases) {
+      const threadId =
+        rejected.name === "self" ? rejected.parentThreadId : `thread:orphan-${rejected.name}`;
+      const failed = yield* launches
+        .launch({
+          ...launchInput({
+            command: `command:launch:orphan-${rejected.name}`,
+            thread: threadId,
+            message: "Never accepted",
+          }),
+          parentThreadId: rejected.parentThreadId,
+        })
+        .pipe(Effect.flip);
+      assert.equal(failed._tag, "ThreadLaunchError");
+      assert.equal(failed.operation, "create-thread");
+      assert.instanceOf(failed.cause, Orchestrator.OrchestratorDispatchError);
+      assert.equal(failed.cause.cause, rejected.detail);
+      assert.isNull(yield* threads.getThreadShell(ThreadId.make(threadId)));
+    }
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect("rejects reusing an existing thread under a parent thread", () => {
+  const harness = makeHarness();
+  return Effect.gen(function* () {
+    const launches = yield* ThreadLaunch.ThreadLaunchService;
+    const failed = yield* launches
+      .launch({
+        ...launchInput({ command: "command:launch:reuse-parent", thread: "thread:reuse-parent" }),
+        reuseExistingThread: true,
+        parentThreadId: ThreadId.make("thread:any-parent"),
+      })
+      .pipe(Effect.flip);
+    assert.equal(failed._tag, "ThreadLaunchError");
+    assert.equal(failed.operation, "update-thread");
+    assert.include(String(failed.cause), "cannot take a parent thread");
   }).pipe(Effect.provide(harness.layer));
 });
 

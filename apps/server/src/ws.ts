@@ -1893,6 +1893,9 @@ const makeWsRpcLayer = (
                   ...(input.reuseExistingThread === undefined
                     ? {}
                     : { reuseExistingThread: input.reuseExistingThread }),
+                  ...(input.parentThreadId === undefined
+                    ? {}
+                    : { parentThreadId: input.parentThreadId }),
                   projectId: input.projectId,
                   title: input.title,
                   ...(input.generateTitle === undefined

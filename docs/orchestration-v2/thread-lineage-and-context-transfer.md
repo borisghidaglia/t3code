@@ -69,6 +69,12 @@ Cross-provider T3 subagents:
 - the app creates a child app thread/run with a relationship to the parent;
 - the child result is transferred back to the parent as a subagent result context transfer.
 
+Client-nested threads:
+
+- a client creates the thread with `parentThreadId` (`thread.create` or `orchestration.launchThread`), naming a live thread in the same project;
+- the thread gets subagent lineage, so clients hide it from navigation and list it under the parent, but `forkedFrom` stays null;
+- nothing is transferred back: the delegated-task result paths only act on children with a node origin.
+
 The shared model should make user forks and agent-created subthreads feel like the same graph shape with different `createdBy` and lifecycle policy.
 
 ## Core Concepts
